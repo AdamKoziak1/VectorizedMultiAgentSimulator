@@ -34,6 +34,7 @@ class Scenario(BaseScenario):
     ''' Agent entities '''
     self.n_agents = kwargs.pop("n_agents", 10)
     self.n_teams = kwargs.pop("teams", 2)
+    
 
     ''' Goal entities '''
     self.n_goals = kwargs.pop("n_goals", 7)
@@ -81,23 +82,33 @@ class Scenario(BaseScenario):
 
     ''' Adding agents '''
     self.teams = {}
+    self.total_goals = {}
     for team in range(self.n_teams):
       self.teams[team] = []
+      self.total_goals[team] = torch.zeros(batch_dim, device=device)
       for agent_num in range(int(self.n_agents)):
-
-        sensors = [SenseSphere(world)]
+        #sensors = [SenseSphere(world)]
         agent = Agent(
           name=f"team_{team}_agent_{agent_num}",
           collide=True,
           rotatable=True,
           color=known_colors[team],
           render_action=True,
-          sensors=sensors,
+          #sensors=sensors,
           shape=Triangle(),
           u_range=[1],  # Ranges for actions
           u_multiplier=[1],  # Action multipliers
           dynamics=BoidDynamics(world=world, team=team)
         )
+        agent.group = f"team_{team}"  # team_0 or team_1
+        if team == 0:
+          agent.team = torch.zeros(
+            batch_dim, device=device
+          )
+        else:
+          agent.team = torch.ones(
+            batch_dim, device=device
+          )
 
         agent.pos_rew = torch.zeros(
           batch_dim, device=device
@@ -168,108 +179,178 @@ class Scenario(BaseScenario):
         "obs": torch.cat(
             [agent.state.pos - goal.state.pos for goal in self.goals] +
             [agent.state.pos - teammate.state.pos for teammate in self.teams[agent.dynamics.team]] +
-            [agent.state.pos - enemy.state.pos for enemy in self.teams[agent.dynamics.team ^ agent.dynamics.team]],
+            [agent.state.pos - enemy.state.pos for enemy in self.teams[agent.dynamics.team ^ 1]],
             dim=-1
         ),
         "pos": agent.state.pos,
         "vel": agent.state.vel,
+        #"team": agent.team,
+        #"influence": 
     }
     return obs
 
   #############################################
   ############## reward function ##############
   #############################################
-  def reward(self, agent: Agent):
-    is_first = agent == self.world.agents[0]
-    is_last = agent == self.world.agents[-1]
-
-    ''' Taken from the discovery.py scenario '''
-    goal_reward = torch.zeros((self.batch_dim,), device=self.device)
-    if is_first:
-      ''' negative reward for time passing - don't think it's relevant for BOIDS '''
-      # self.time_rew = torch.full(
-      #   (self.world.batch_dim,),
-      #   self.time_penalty,
-      #   device=self.world.device,
-      # )
-
-      ''' updating tensor of all agent positions - shape [board_dimensions, num_agents] '''
-      self.agents_pos = torch.stack(
-        [a.state.pos for a in self.world.agents], dim=1
-      )
-      ''' updating tensor of all goal positions '''
-      self.goals_pos = torch.stack([g.state.pos for g in self.goals], dim=1)
-
-      ''' getting tensor with distances between reward positions and agent positions '''
-      self.agents_goals_dists = torch.cdist(self.agents_pos, self.goals_pos)
-
-      self.agents_per_goal = torch.sum(
-        (self.agents_goals_dists < self.goal_range).type(torch.int),
-        dim=1,
-      )
-
-      self.covered_goals = self.agents_per_goal >= self.goal_threshold
-
-      ''' Flat reward for each goal captured by the team '''
-      goal_reward = torch.zeros((self.batch_dim,), device=self.device)
-      # print(self.covered_goals)
-      # print(self.covered_goals.shape())
-      for goal_covered in self.covered_goals[0]:
-        if goal_covered:
-            goal_reward += self.flat_goal_reward  # Add flat reward for each goal covered
-
-    if is_last:
-      if self.goal_respawn:
-        occupied_positions_agents = [self.agents_pos]
-        for i, goal in enumerate(self.goals):
-          occupied_positions_goals = [
-            o.state.pos.unsqueeze(1)
-            for o in self.goals
-            if o is not goal
-          ]
-          occupied_positions = torch.cat(
-            occupied_positions_agents + occupied_positions_goals,
-            dim=1,
-          )
-          pos = ScenarioUtils.find_random_pos_for_entity(
-            occupied_positions,
-            env_index=None,
-            world=self.world,
-            min_dist_between_entities=self.min_distance_between_entities,
-            x_bounds=(-self.world.x_semidim, self.world.x_semidim),
-            y_bounds=(-self.world.y_semidim, self.world.y_semidim),
-          )
-
-          goal.state.pos[self.covered_goals[:, i]] = pos[
-            self.covered_goals[:, i]
-          ].squeeze(1)
-      else:
-        self.all_time_covered_goals += self.covered_goals
-        for i, goal in enumerate(self.goals):
-          goal.state.pos[self.covered_goals[:, i]] = self.get_outside_pos(
-            None
-          )[self.covered_goals[:, i]]
-
-    ''' Negative reward for touching boundaries (walls) '''
-    coll_pen = torch.where(abs(agent.state.pos[0][0]) == self.world_size_x or abs(agent.state.pos[0][1]) == self.world_size_y, -1, 0)
-    
-    ''' Combining goal reward and collision penalty '''
-    reward = goal_reward + coll_pen
-
-    ''' Return the total reward (tensor of shape [self.world.batch_dim,]) '''
-    return reward
-  
   # def reward(self, agent: Agent):
-  #   reward = 0.0
-  #   # negative reward for touching boundaries
-  #   pos_x = agent.state.pos[0][0]
-  #   pos_y = agent.state.pos[0][1]
-  #   if abs(pos_x) == self.world_size_x or abs(pos_y) == self.world_size_y:
-  #     reward -=1
+  #   is_first = agent == self.world.agents[0]
+  #   is_last = agent == self.world.agents[-1]
 
-  #   #return torch.tensor([reward], device=self.device)
-  #   return torch.full((self.batch_dim,), reward, device=self.device)
+  #   ''' Taken from the discovery.py scenario '''
+  #   goal_reward = torch.zeros((self.batch_dim,), device=self.device)
+  #   if is_first:
+  #     ''' negative reward for time passing - don't think it's relevant for BOIDS '''
+  #     # self.time_rew = torch.full(
+  #     #   (self.world.batch_dim,),
+  #     #   self.time_penalty,
+  #     #   device=self.world.device,
+  #     # )
 
+  #     ''' updating tensor of all agent positions - shape [board_dimensions, num_agents] '''
+  #     self.agents_pos = torch.stack(
+  #       [a.state.pos for a in self.world.agents], dim=1
+  #     )
+  #     ''' updating tensor of all goal positions '''
+  #     self.goals_pos = torch.stack([g.state.pos for g in self.goals], dim=1)
+
+  #     ''' getting tensor with distances between reward positions and agent positions '''
+  #     self.agents_goals_dists = torch.cdist(self.agents_pos, self.goals_pos)
+
+  #     self.agents_per_goal = torch.sum(
+  #       (self.agents_goals_dists < self.goal_range).type(torch.int),
+  #       dim=1,
+  #     )
+
+  #     self.covered_goals = self.agents_per_goal >= self.goal_threshold
+
+  #     ''' Flat reward for each goal captured by the team '''
+  #     goal_reward = torch.zeros((self.batch_dim,), device=self.device)
+  #     # print(self.covered_goals)
+  #     # print(self.covered_goals.shape())
+  #     for goal_covered in self.covered_goals[0]:
+  #       if goal_covered:
+  #           goal_reward += self.flat_goal_reward  # Add flat reward for each goal covered
+
+  #   if is_last:
+  #     if self.goal_respawn:
+  #       occupied_positions_agents = [self.agents_pos]
+  #       for i, goal in enumerate(self.goals):
+  #         occupied_positions_goals = [
+  #           o.state.pos.unsqueeze(1)
+  #           for o in self.goals
+  #           if o is not goal
+  #         ]
+  #         occupied_positions = torch.cat(
+  #           occupied_positions_agents + occupied_positions_goals,
+  #           dim=1,
+  #         )
+  #         pos = ScenarioUtils.find_random_pos_for_entity(
+  #           occupied_positions,
+  #           env_index=None,
+  #           world=self.world,
+  #           min_dist_between_entities=self.min_distance_between_entities,
+  #           x_bounds=(-self.world.x_semidim, self.world.x_semidim),
+  #           y_bounds=(-self.world.y_semidim, self.world.y_semidim),
+  #         )
+
+  #         goal.state.pos[self.covered_goals[:, i]] = pos[
+  #           self.covered_goals[:, i]
+  #         ].squeeze(1)
+  #     else:
+  #       self.all_time_covered_goals += self.covered_goals
+  #       for i, goal in enumerate(self.goals):
+  #         goal.state.pos[self.covered_goals[:, i]] = self.get_outside_pos(
+  #           None
+  #         )[self.covered_goals[:, i]]
+
+  #   ''' Negative reward for touching boundaries (walls) '''
+  #   coll_pen = torch.where(abs(agent.state.pos[0][0]) == self.world_size_x or abs(agent.state.pos[0][1]) == self.world_size_y, -5, 0)
+    
+  #   ''' Combining goal reward and collision penalty '''
+  #   reward = goal_reward + coll_pen
+
+  #   ''' Return the total reward (tensor of shape [self.world.batch_dim,]) '''
+  #   return reward
+
+  def reward(self, agent: Agent):
+      team = agent.dynamics.team
+
+      # Negative penalty if touching boundaries.
+      # (Assumes agent.state.pos has shape [batch_dim, 2].)
+      coll_pen = torch.where(
+          (torch.abs(agent.state.pos[:, 0]) == self.world_size_x) |
+          (torch.abs(agent.state.pos[:, 1]) == self.world_size_y),
+          -5, 0
+      )
+
+      # Compute team-specific rewards and capture flags once per timestep.
+      # We use the first agent to do the per-timestep computation.
+      if agent == self.world.agents[0]:
+          # Update the goals positions for the current batch.
+          self.goals_pos = torch.stack([g.state.pos for g in self.goals], dim=1)  # shape: [batch_dim, n_goals, 2]
+
+          # Create dictionaries to store rewards and captured flags per team.
+          self.team_goal_reward = {}
+          self.team_captured_goals = {}
+          for t in range(self.n_teams):
+              team_agents = self.teams[t]  # agents for team t
+              # Stack positions: shape [batch_dim, n_team_agents, 2]
+              team_agents_pos = torch.stack([a.state.pos for a in team_agents], dim=1)
+              # Compute distances between each team agent and every goal:
+              # resulting shape: [batch_dim, n_team_agents, n_goals]
+              dists = torch.cdist(team_agents_pos, self.goals_pos)
+              # Count, per environment and per goal, how many team agents are within the goal range.
+              # Sum along the agents dimension (dim=1) → shape: [batch_dim, n_goals]
+              agents_count = torch.sum((dists < self.goal_range).int(), dim=1)
+              # Determine capture: each goal is captured for team t if count >= threshold.
+              captured = agents_count >= self.goal_threshold  # shape: [batch_dim, n_goals] (bool)
+              self.team_captured_goals[t] = captured
+              # Compute the flat reward per environment: number of captured goals × flat_goal_reward.
+              # Here, captured.sum(dim=1) gives a [batch_dim] tensor.
+              self.team_goal_reward[t] = captured.sum(dim=1).float() * self.flat_goal_reward
+              self.total_goals[t] += captured.sum(dim=1).float()
+          print(f"team 0: {self.total_goals[t]}, team 1 {self.total_goals[1]}")
+
+      # Handle goal respawning once per timestep.
+      # We use the last agent to perform the respawn logic.
+      if agent == self.world.agents[-1]:
+          if self.goal_respawn:
+              # Combine capture flags from all teams using a logical OR.
+              # This yields a [batch_dim, n_goals] boolean tensor.
+              captured_any = torch.zeros_like(self.team_captured_goals[0], dtype=torch.bool)
+              for t in range(self.n_teams):
+                  captured_any = captured_any | self.team_captured_goals[t]
+
+              # For each goal index, if any environment element is captured, update that goal's position.
+              # First, get the positions of all agents (for computing occupied positions).
+              occupied_positions_agents = [torch.stack([a.state.pos for a in self.world.agents], dim=1)]
+              for i, goal in enumerate(self.goals):
+                  # captured_mask: [batch_dim] bool tensor for goal i.
+                  captured_mask = captured_any[:, i]
+                  if captured_mask.any():
+                      # Compute occupied positions for other goals (skip goal i).
+                      occupied_positions_goals = [
+                          o.state.pos.unsqueeze(1)
+                          for j, o in enumerate(self.goals) if j != i
+                      ]
+                      occupied_positions = torch.cat(occupied_positions_agents + occupied_positions_goals, dim=1)
+                      # Find new positions for the captured goal.
+                      pos = ScenarioUtils.find_random_pos_for_entity(
+                          occupied_positions,
+                          env_index=None,
+                          world=self.world,
+                          min_dist_between_entities=self.min_distance_between_entities,
+                          x_bounds=(-self.world.x_semidim, self.world.x_semidim),
+                          y_bounds=(-self.world.y_semidim, self.world.y_semidim),
+                      )
+                      # Update the goal's position for each environment where it was captured.
+                      new_positions = pos[captured_mask].squeeze(1)
+                      goal.state.pos[captured_mask] = new_positions
+
+      # Finally, return the reward for the agent's team (plus collision penalty).
+      # The reward tensor is per environment.
+      team_reward = self.team_goal_reward.get(team, torch.zeros_like(self.flat_goal_reward))
+      return team_reward + coll_pen
 
   #############################################
   ############## Extra_render ################
@@ -279,6 +360,9 @@ class Scenario(BaseScenario):
 
     geoms: List[Geom] = []
 
+    # for id, team in enumerate(self.teams):
+    #   score = rendering.TextLine(text=f"team {id} reward: {self.team_goal_reward.get(team, torch.zeros_like(self.flat_goal_reward))}")
+    #   geoms.append(score)
     # Goal covering ranges
     for goal in self.goals:
       range_circle = rendering.make_circle(goal.range, filled=False)
